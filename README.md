@@ -28,24 +28,24 @@ honored — then renders TOON. Anything that marshals correctly to JSON marshals
 correctly to TOON, with object key order and full number precision preserved.
 
 ```go
-type Deployment struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Replicas int    `json:"replicas"`
+type User struct {
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 b, _ := toon.Marshal(map[string]any{
-	"items": []Deployment{
-		{"api", "WebService", 2},
-		{"worker", "Worker", 1},
+	"users": []User{
+		{1, "Alice", "alice@example.com"},
+		{2, "Bob", "bob@example.com"},
 	},
 })
 ```
 
 ```
-items[2]{name,type,replicas}:
-  api,WebService,2
-  worker,Worker,1
+users[2]{id,name,email}:
+  1,Alice,alice@example.com
+  2,Bob,bob@example.com
 ```
 
 `toon.MediaType` (`text/toon`) is the format's provisional media type, for
