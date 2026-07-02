@@ -70,7 +70,9 @@ func TestFixtures(t *testing.T) {
 					}
 				}
 				t.Run(tc.Name, func(t *testing.T) {
-					got, err := Marshal(tc.Input)
+					// Fixtures assert verbatim rendering of the full data
+					// model, so the default empty-field omission is disabled.
+					got, err := Marshal(tc.Input, IncludeEmpty())
 					if err != nil {
 						t.Fatalf("Marshal error: %v", err)
 					}
@@ -141,12 +143,12 @@ func TestMarshal(t *testing.T) {
 		{"leading line separator", map[string]any{"v": "\u2028x"}, "v: \"\u2028x\""},
 		{"interior nbsp stays bare", map[string]any{"v": "a\u00a0b"}, "v: a\u00a0b"},
 
-		// null value in object
-		{"null value", map[string]any{"v": nil}, "v: null"},
+		// empty fields are omitted by default
+		{"null value omitted", map[string]any{"v": nil, "k": 1}, "k: 1"},
+		{"empty array field omitted", map[string]any{"items": []any{}, "k": 1}, "k: 1"},
 
 		// arrays of primitives
 		{"primitive array", map[string]any{"tags": []string{"a", "b"}}, "tags[2]: a,b"},
-		{"empty array field", map[string]any{"items": []any{}}, "items: []"},
 		{"empty root array", []any{}, "[]"},
 		{"root primitive array", []any{"x", "y", 10}, "[3]: x,y,10"},
 
@@ -217,14 +219,111 @@ func TestMarshalStructTags(t *testing.T) {
 
 func TestMarshalOmitemptyPresent(t *testing.T) {
 	s := sample{ID: 1, Name: "Ada", Optional: "here", Tags: nil, Nested: inner{X: 0}}
-	// Tags is nil -> JSON null -> "tags: null". omitempty field present.
-	want := "id: 1\nname: Ada\noptional: here\ntags: null\nnested:\n  x: 0"
+	// Tags is nil -> JSON null -> omitted by default; x: 0 is kept (zero is
+	// meaningful, not empty).
+	want := "id: 1\nname: Ada\noptional: here\nnested:\n  x: 0"
 	got, err := Marshal(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+
+	// IncludeEmpty encodes the full data model verbatim.
+	want = "id: 1\nname: Ada\noptional: here\ntags: null\nnested:\n  x: 0"
+	got, err = Marshal(s, IncludeEmpty())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("IncludeEmpty: got %q, want %q", got, want)
+	}
+}
+
+func TestMarshalOmitEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"nested empties prune recursively",
+			map[string]any{"a": map[string]any{"b": nil, "c": map[string]any{"d": ""}}, "k": 1},
+			"k: 1"},
+		{"false and zero are kept",
+			map[string]any{"paused": false, "replicas": 0, "note": ""},
+			"paused: false\nreplicas: 0"},
+		{"empty root object stays empty document",
+			map[string]any{"a": nil},
+			""},
+		{"array elements are never removed",
+			map[string]any{"v": []any{nil, "", 1}},
+			"v[3]: null,\"\",1"},
+		{"column empty in all elements is dropped, tabular kept",
+			[]any{
+				map[string]any{"id": 1, "name": "Ada", "url": ""},
+				map[string]any{"id": 2, "name": "Bob", "url": nil},
+			},
+			"[2]{id,name}:\n  1,Ada\n  2,Bob"},
+		{"column empty in some elements is kept, tabular kept",
+			[]any{
+				map[string]any{"id": 1, "url": ""},
+				map[string]any{"id": 2, "url": "https://x"},
+			},
+			"[2]{id,url}:\n  1,\"\"\n  2,\"https://x\""},
+		{"nested object inside element pruned, column rule applies to result",
+			[]any{
+				map[string]any{"id": 1, "meta": map[string]any{"note": ""}},
+				map[string]any{"id": 2, "meta": map[string]any{}},
+			},
+			"[2]{id}:\n  1\n  2"},
+		{"non-uniform object array still prunes per column",
+			map[string]any{"items": []any{
+				map[string]any{"id": 1, "gone": nil},
+				map[string]any{"id": 2, "extra": "x", "gone": ""},
+			}},
+			"items[2]:\n  - id: 1\n  - extra: x\n    id: 2"},
+		{"mixed array prunes object elements normally",
+			map[string]any{"v": []any{map[string]any{"a": "", "b": 1}, "s"}},
+			"v[2]:\n  - b: 1\n  - s"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Marshal(tc.in)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMarshalIncludeEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"null value", map[string]any{"v": nil}, "v: null"},
+		{"empty array field", map[string]any{"items": []any{}}, "items: []"},
+		{"empty nested object", map[string]any{"a": map[string]any{}}, "a:"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Marshal(tc.in, IncludeEmpty())
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

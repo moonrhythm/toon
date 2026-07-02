@@ -15,6 +15,10 @@
 // tags and custom json.Marshaler implementations are honored — then rendered
 // as TOON. Anything that marshals correctly to JSON marshals correctly to
 // TOON, with object key order and full number precision preserved.
+//
+// By default, empty object fields (null, "", {}, []) are omitted from the
+// output — they are pure token cost for an LLM reader. Pass IncludeEmpty to
+// encode the full data model verbatim. See Marshal for the exact rules.
 package toon
 
 import (
@@ -33,10 +37,37 @@ const MediaType = "text/toon"
 // indentUnit is the number of spaces per indentation level (spec default: 2).
 const indentUnit = 2
 
+// Option configures Marshal.
+type Option func(*config)
+
+type config struct {
+	includeEmpty bool
+}
+
+// IncludeEmpty disables the default omission of empty object fields, encoding
+// the full JSON data model verbatim (null, "", {}, and [] values included).
+func IncludeEmpty() Option {
+	return func(c *config) { c.includeEmpty = true }
+}
+
 // Marshal encodes v as TOON. v is first interpreted using encoding/json
 // semantics — json struct tags and custom MarshalJSON implementations are
 // honored — then rendered as TOON.
-func Marshal(v any) ([]byte, error) {
+//
+// By default empty object fields — null, "", empty objects, and empty arrays
+// (after their own contents are pruned) — are omitted: absent and empty carry
+// the same information for an LLM reader, and empty fields are pure token
+// cost. false and 0 are meaningful values and are always kept. In an array of
+// objects a field is omitted only when it is empty in every element, so
+// per-element emptiness never breaks the key-set uniformity that enables the
+// tabular layout. Array elements themselves are never removed. Use
+// IncludeEmpty to encode the full data model verbatim.
+func Marshal(v any, opts ...Option) ([]byte, error) {
+	var cfg config
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -49,9 +80,110 @@ func Marshal(v any) ([]byte, error) {
 		return nil, err
 	}
 
+	if !cfg.includeEmpty {
+		root = prune(root)
+	}
+
 	var e encoder
 	e.encodeRoot(root)
 	return []byte(strings.Join(e.lines, "\n")), nil
+}
+
+// prune recursively drops empty fields from objects. Array elements are never
+// removed (length and positions are data); inside an array whose elements are
+// all objects, a key is dropped only when its value is empty in every element
+// that carries it, so pruning preserves key-set uniformity (and with it the
+// tabular layout).
+func prune(v any) any {
+	switch t := v.(type) {
+	case *object:
+		out := &object{}
+		for i, k := range t.keys {
+			pv := prune(t.vals[i])
+			if isEmptyValue(pv) {
+				continue
+			}
+			out.keys = append(out.keys, k)
+			out.vals = append(out.vals, pv)
+		}
+		return out
+	case []any:
+		if len(t) > 0 && allObjects(t) {
+			return pruneObjectArray(t)
+		}
+		out := make([]any, len(t))
+		for i, el := range t {
+			out[i] = prune(el)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// pruneObjectArray prunes an array whose elements are all objects: element
+// values are pruned in place (keys kept), then a key is dropped from every
+// element iff its pruned value is empty in each element that has it.
+func pruneObjectArray(arr []any) []any {
+	els := make([]*object, len(arr))
+	for i, el := range arr {
+		src := el.(*object)
+		dst := &object{keys: append([]string(nil), src.keys...), vals: make([]any, len(src.vals))}
+		for j, v := range src.vals {
+			dst.vals[j] = prune(v)
+		}
+		els[i] = dst
+	}
+
+	keepKey := map[string]bool{}
+	for _, el := range els {
+		for i, k := range el.keys {
+			if !isEmptyValue(el.vals[i]) {
+				keepKey[k] = true
+			}
+		}
+	}
+
+	out := make([]any, len(els))
+	for i, el := range els {
+		kept := &object{}
+		for j, k := range el.keys {
+			if !keepKey[k] {
+				continue
+			}
+			kept.keys = append(kept.keys, k)
+			kept.vals = append(kept.vals, el.vals[j])
+		}
+		out[i] = kept
+	}
+	return out
+}
+
+// isEmptyValue reports whether a pruned value carries no information: null,
+// "", an empty object, or an empty array. false and 0 are meaningful and are
+// not empty.
+func isEmptyValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return t == ""
+	case *object:
+		return len(t.keys) == 0
+	case []any:
+		return len(t) == 0
+	default:
+		return false
+	}
+}
+
+func allObjects(arr []any) bool {
+	for _, el := range arr {
+		if _, ok := el.(*object); !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // object is an order-preserving JSON object. map[string]any cannot be used

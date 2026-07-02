@@ -51,6 +51,24 @@ users[2]{id,name,email}:
 `toon.MediaType` (`text/toon`) is the format's provisional media type, for
 HTTP content negotiation.
 
+## Empty fields are omitted by default
+
+Empty object fields — `null`, `""`, `{}`, `[]` (after their own contents are
+pruned) — are omitted from the output: absent and empty carry the same
+information for an LLM reader, and empty fields are pure token cost. `false`
+and `0` are meaningful values and are always kept, and array elements are
+never removed.
+
+In an array of objects, a field is omitted only when it is empty in **every**
+element — per-element omission would break the key-set uniformity that
+enables the tabular layout (and cost more tokens than it saves).
+
+Pass `toon.IncludeEmpty()` to encode the full data model verbatim:
+
+```go
+b, err := toon.Marshal(v, toon.IncludeEmpty())
+```
+
 ## Format choices
 
 Output is deterministic with fixed spec-default options: 2-space indent,
